@@ -1,25 +1,327 @@
 ---
-title: "Untitled"
+title: "SEB užduotis"
+author: "Žygimantas Bogužas"
 format: html
+embed-resources: true
+fig-width: 10
+fig-height: 6
+fig-format: svg
+fig-align: center
 ---
 
-## Quarto
-
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
-
-## Running Code
-
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+**Packages setup**
 
 ```{r}
-1 + 1
+#| output: false
+if (!require('tidyverse')) install.packages('tidyverse'); library('tidyverse')
+if (!require('conflicted')) install.packages('conflicted'); library('conflicted')
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::lag)
+if (!require('ggridges')) install.packages('ggridges'); library('ggridges')
+if (!require('patchwork')) install.packages('patchwork'); library('patchwork')
+if (!require('pscl')) install.packages('pscl'); library('pscl')
+if (!require('caret')) install.packages('caret'); library('caret')
+if (!require('pROC')) install.packages('pROC'); library('pROC')
+if (!require('car')) install.packages('car'); library('car')
+if (!require('corrplot')) install.packages('corrplot'); library('corrplot')
 ```
 
-You can add options to executable code like this 
+**Data import**
+
+Data is in form of csv file, so we can use readr package from tidyverse. Delimiter ';' that's why here we use *read_csv2* instead of the regular *read_csv* command.
 
 ```{r}
-#| echo: false
-2 * 2
+#| warning: false
+df <- read_csv2("https://raw.githubusercontent.com/zygisbgs/uzduotis/main/bank-full.csv")
 ```
 
-The `echo: false` option disables the printing of code (only output is displayed).
+**First look at data**
+
+```{r}
+glimpse(df)
+```
+
+1.  No need to fix or clean column names. (If that would be the case then janitor package and function *clean_names()* would be used)
+2.  We can see that R Correctly recognized classes of variables (columns). So there is no need to adjust this.
+
+**Quick check for NA's**
+
+Count missing values across each of the columns, then (so it elegantly fits to the report) reshape data to long format and sort by highest amount amount of NA values.
+
+```{r}
+df %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "na_count") %>%
+  arrange(desc(na_count)) %>%
+  slice_head(n = 5)
+```
+
+There are no missing values in any of the columns.
+
+**Descriptive statistics**
+
+In this case only *summary(df)* would give descriptive statistics for all of the columns (including character ones) which wouldn't tell anything new. That is why (and for clearer view)character variables are filtered out.
+
+```{r}
+df %>%
+  select(where(is.numeric)) %>%
+  summary(.)
+```
+
+We can see some general descriptive statistics and can say things like: 'Average age of this bank customers is 41 years old' or "in this bank there are some customers with over 100k euros in their checking account, but on the other extreme the highest debt doesn't reach 10k euros while the median of of all customers balance being positive, 448 Euros. Interesting to see that on average a consultation with a client lasts for about 4 minutes. etc.
+
+**Deeper dive into statistics by group**
+
+First of all lets rename some variables for better understanding what they mean. For that it is possible to use dplyr rename function.
+
+```{r}
+df.renamed <-
+  df %>%
+  rename(
+    type.of.job = job,
+    marital.status = marital,
+    had.credit.default = default,
+    avg.y.balance = balance,
+    has.housing.loan = housing,
+    has.personal.loan = loan,
+    contact.type = contact,
+    last.contact.day = day,
+    last.contact.month = month,
+    last.contact.duration.seconds = duration,
+    campaign.contacts.total = campaign,
+    days.after.last.contact = pdays,
+    contacts.before.campaign = previous,
+    previous.campaign.outcome = poutcome,
+    new.term.deposit = y
+  )
+
+colnames(df.renamed)
+```
+
+In practice I've noticed that it is more common to use \_ instead of .
+
+```{r}
+df_renamed <-
+  df.renamed %>%
+  rename_with(~ gsub(".", "_", ., fixed = T))
+colnames(df_renamed)
+```
+
+**Dropping, filtering, grouping data, summarizing statistics calculations, plotting**
+
+Let's say we are interested to see how default is distributed according to clients age, maybe there would be some kind of tendency or extremes (if age matters in those who defaulted on a credit)
+
+```{r}
+#Filter everyone who had credit default, Bin age by 5 years (otherwise there would be too many groups), group data by age group(bins) and calculate the amount of credit defaults in each age group.
+df_p1 <- 
+  df_renamed %>% 
+  filter(had_credit_default == "yes") %>%
+  mutate(age_group = cut(age, seq(min(age), max(age), 5)), .before = type_of_job) %>%
+  filter(!is.na(age_group)) %>% 
+  group_by(age_group) %>% 
+  summarise(default_by_age_group = n())
+df_p1
+```
+
+Plot the results for easier interpretation
+
+```{r}
+#this could also be connected with code above with pipes
+df_p1 %>% 
+  ggplot(aes(x=age_group, y=default_by_age_group, fill = default_by_age_group))+
+  geom_col() +
+  geom_text(aes(label = default_by_age_group), vjust = -0.4)+
+  labs(title = "Default on credit occurrences by age group", fill = "", y = "Occurrences", x = "Age group")+
+  theme_bw()+
+  theme(legend.position = "none")
+```
+
+We can see that according to this data younger clients are more likely to default on their credit. But this interpretation should be taken with a thought in mind, that the overall amount of clients by age are not the same.
+
+Lets analyze average yearly balance distribution by education and type of job
+
+```{r}
+#| warning: false
+
+unique(df_renamed$type_of_job)
+unique(df_renamed$education)
+
+df_p2_p3 <- df_renamed %>% 
+  select(type_of_job, education, avg_y_balance) %>%
+  filter(education != "unknown" & type_of_job != "unknown" & type_of_job != "unemployed", between(avg_y_balance, -2500, 7500))
+
+#Average yearly balance distribution according to education
+p2 <- df_p2_p3 %>% 
+  ggplot(aes(x = avg_y_balance, y = education, fill = education))+
+  geom_violin()+
+  labs(title = "", x= "Average yearly balance, EUR", y = "Level of education")+
+  theme_ridges()+
+  theme(legend.position = "")+
+  coord_flip()
+  
+#Average yearly balance distribution according to job type
+p3 <- df_p2_p3 %>% 
+  ggplot(aes(x = avg_y_balance, y = type_of_job, fill = type_of_job))+
+  geom_density_ridges()+
+  theme_ridges()+
+  theme(legend.position = "")+
+  labs(title = "", y = "Job type", x = "Average yearly balance, EUR" )
+
+p2+p3
+```
+
+We can see, that average yearly balance distribution by level of education and job type is quite similar. Maybe we can say that positive balances of those who have tertiary level of education are more equally distributed, but this could also be because that group is the biggest by quite a big margin compared to other two.
+
+Some more visualizations for data exploration
+
+```{r}
+unique(df_renamed$marital_status)
+unique(df_renamed$has_housing_loan)
+unique(df_renamed$has_personal_loan)
+
+df_p4_p5 <- df_renamed %>% 
+  select(marital_status, has_housing_loan, has_personal_loan) 
+
+p4 <- df_p4_p5%>%
+  ggplot(aes(x = has_housing_loan, fill = marital_status)) +
+  geom_bar()+
+  theme_bw()+
+  theme(legend.position = "right")+
+  labs(fill = "", title = "Housing loan by marital status", y="", x="Has housing loan?")
+
+p5 <- df_p4_p5%>%
+  ggplot(aes(x = has_personal_loan, fill = marital_status)) +
+  geom_bar()+
+  theme_bw()+
+  theme(legend.position = "right")+
+  labs(fill = "", title = "Personal loan by marital status", y="", x="Has personal loan?")
+p4+p5
+```
+
+The more surprising result here is that almost half of the participants have housing loans and second is that there are quite a lot of people who has personal loans even in marriage.
+
+```{r}
+#| warning: false
+df_corr_plot <- df_renamed %>% select(is.numeric)
+corrplot(cor(df_corr_plot), method = "pie", type = "lower")
+```
+
+It is almost a certainty that if later we include all of the numeric variables into regression, there won't be multicolinearity problem.
+
+**Modelling part**
+
+Before fitting logistic regression, first, we need to change categorical variables to factors.
+
+```{r}
+#| warning: false
+
+df_mod <- 
+  df_renamed %>%
+  mutate(new_term_deposit = ifelse(new_term_deposit == "yes",1,0),
+         across(c(is.character,new_term_deposit), as.factor))
+```
+
+Second, is to split data frame to random training (80 % of total data) and to testing (20 % whats left of total) partitions.
+
+```{r}
+#add ID collumn
+df_m <- 
+ df_mod %>% 
+  mutate(id = row_number(), .before = age)
+
+set.seed(1)
+#Training data
+df_training <- 
+ df_m %>% 
+  slice_sample(prop = 0.80)
+
+#Testing data
+df_testing <- anti_join(df_m, df_training, by = "id")
+
+#remove id collumn
+df_training <- df_training %>% select(-id)
+df_testing <- df_testing %>% select(-id)
+
+dim(df_training)
+dim(df_testing)
+```
+
+Third, we can now fit first(using all independant variables) logistic regression with glm() command using training data.
+
+```{r}
+log_mod_all_vars <- glm(new_term_deposit ~ ., family = binomial, data = df_training)
+summary(log_mod_all_vars)
+```
+
+Since not all of the independent variables are statistically significant, we can use step wise algorithm to find best model according to Akaike information criterion instead of eliminating most insignificant ones by hand one by one.
+
+```{r}
+final_mod <- step(log_mod_all_vars, direction = "backward", trace = 0)
+summary(final_mod)
+```
+Attempt of interpretation of some estimates: last_contact_duration_seconds est. 0.004162. For every one unit(second) change in call duration, the log odds of subscription to new term deposit (versus no new subscription) increases by 0.0042. previous_campaign_outcomesuccess est. 2.278. If the previous campaign with the client was a success compared to other campaign outcome it increases log odds of this campaign new term deposit subscription by 2.278
+
+Lastly, we can move to checking our final model robustness.
+
+Final model goodness of fit. Package *pscl* with command *pR2()* is used.
+
+```{r}
+#R squared for logistic regression 
+pR2(final_mod)
+```
+
+R2 for this logistic model is ~0,34 (McFadden) which tells us that the fit could definitely be improved.
+
+Final model accuracy evaluation
+
+```{r}
+#response calculates probabilities
+pred_prob <- predict(final_mod, newdata = df_testing, type = "response")
+df_testing <- df_testing %>%
+  mutate(predicted = ifelse(pred_prob >= 0.5,1,0))
+
+accuracy <- mean(df_testing$predicted == df_testing$new_term_deposit)
+print(accuracy)
+```
+
+Model accurately classifies \~90 % of the cases (which honestly seems too good of a result). Using *Caret* package we can create confusion matrix for more details.
+
+```{r}
+conf_m <- 
+  df_testing %>% 
+  mutate(across(new_term_deposit:predicted, as.factor))
+
+confusionMatrix(conf_m$new_term_deposit, conf_m$predicted)
+```
+
+Short summary (skipping accuracy we know that from earlier):
+
+1.  No Information Rate (NIR) is ~94%, meaning randomly predicting "0" (no new term deposit) would have achieved similar accuracy due to class imbalance.
+
+2.  Statistically significant Mcnemar's test (p-value < 2e-16) suggests that the model does have some predictive power compared to random guessing.
+
+3.  Sensitivity - 92%. Model correctly identifies 92.03% of clients who did subscribe to a new term deposit.
+
+4.  Specificity - 65%. Model correctly identifies around 65% of clients who did subscribe to a new term deposit. (This measure might be affected due to the class imbalance.)
+
+5.  Positive predictive value (precision): 97.5 %. Among those predicted to not subscribe to a new term deposit, 97.5% actually did not. On the other hand only 35 % of those predicted to adopt a new term deposit actually did (meaning model is not the greatest predicting positive outcome).
+
+6.  Balanced accuracy: 78% - this considers both sensitivity and specificity, providing a more balanced view of models performance. Conclusion we can draw is that model is better than randomly guessing(f.e. flipping a coin) 50%. So we can say that it is more useful having the model than not.
+
+Finally, using *pROC* package we can draw ROC curve for visual representation of the model accuracy
+
+```{r}
+roc(df_testing$new_term_deposit, df_testing$predicted, plot = T, legacy.axes = T, percent = T, ylab = "True positive % (sensitivity)", xlab = "False positive % (specificity)")
+```
+
+Simply put area under curve (AUC) is ~66% meaning that the model could be improved a lot. It is better than flipping a coin but not by much.
+
+Common problem in logistic regressions is overfitting and multicolinearity, we can quickly check for that with *vif* command
+
+```{r}
+vif(final_mod)
+```
+
+According to some literature it becomes problematic when vif value of variable is higher than 5, which is not the case here. If multicolinearity would be a problem further exploration could be done by graphing correlation matrix and regression could be fixed by eliminating variables that causes this particular problem.
+
+General note that now rendering to html takes some time. Massive improvement in this regard could be done by first estimating logit regression where new_term_deposit ~ 1. And after that in command Step changing the direction to forward.
